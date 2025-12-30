@@ -48,8 +48,6 @@ This project was born from that realization: **reduce the marginal cost per atte
 <img width="1490" height="889" alt="image" src="https://github.com/user-attachments/assets/4b32b940-6e44-4975-a3a8-efb13362f626" />
 No magic here — just circuits doing exactly what you tell them to do. 💻
 
-<img width="715" height="606" alt="image" src="https://github.com/user-attachments/assets/1c84e7c8-7b1c-4396-b839-f0b923d8f653" />
-
 
 ---
 
