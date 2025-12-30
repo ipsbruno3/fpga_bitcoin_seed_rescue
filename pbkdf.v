@@ -13,16 +13,22 @@
 //  I'm initially testing with combinational cycles to run the seed tests in parallel, so each seed has a combinational process. 
 //  If the clocks are not >200MHz on intermediate FPGAs, I will refactor the logic to work with pipelines.
 //  For now we are only doing this for "mnemonic" entries (tests)
+//  DSP, Pipelines ainda não implementados
 //
 //////////////////////////////////////////////////////////////////////////////////
 
-module tests;
+
+module test;
     reg clk = 0;
-    reg rst_n = 1;
+    reg rst_n = 0;
     reg start = 0;
 
     wire [511:0] seed_out;
     wire done;
+
+    // PBKDF2-HMAC-SHA512("mnemonic", "mnemonic", 2048, 64)
+    localparam [511:0] EXPECT =
+        512'h7ddd60748d5e7cfc8f6c823df5c2956e14365245e2c8bba5ea732bbd790392a3ef5bdd731380072dd54f50923a7164ea502acf9d74cd794570252cc64bc7f744;
 
     pbkdf2_hmac_sha512_mnemonic dut (
         .clk(clk),
@@ -34,155 +40,222 @@ module tests;
 
     always #5 clk = ~clk;
 
-    // Timeout para não travar se done nunca chegar
     initial begin
-        #2000000; // 2 ms (timescale 1ns)
+        // timeout bem folgado
+        #2000000;
         $display("TIMEOUT: done nao chegou.");
         $finish;
     end
 
     initial begin
-        $display("Simulation start");
+        $display("BEGIN");
 
         rst_n = 0;
         #20 rst_n = 1;
 
-        #10 start = 1;
+        #20 start = 1;
         #10 start = 0;
 
-        // espera terminar
         wait(done);
+        $display("DONE t=%0t ns", $time);
+        $display("OUT   = %h", seed_out);
+        $display("EXPECT= %h", EXPECT);
 
-        $display("==========================================");
-        $display("DONE em t=%0t ns", $time);
-        $display("BIP39 Seed para mnemonic 'mnemonic' (sem passphrase):");
-        $display("%h", seed_out);
-        $display("==========================================");
-        $display("%h %h %h %h %h %h %h %h",
-                 seed_out[511:448], seed_out[447:384], seed_out[383:320], seed_out[319:256],
-                 seed_out[255:192], seed_out[191:128], seed_out[127:64], seed_out[63:0]);
+        if (seed_out === EXPECT) $display("PASS ✅");
+        else                    $display("FAIL ❌");
 
         $finish;
     end
 endmodule
 
 
-
+// ============================================================
+// PBKDF2-HMAC-SHA512 FIXO (mnemonic / mnemonic) - estilo OpenCL
+// (usa teu sha512_pipeline como compressão de 1 bloco encadeável)
+// ============================================================
 module pbkdf2_hmac_sha512_mnemonic (
-    input wire clk,
-    input wire rst_n,
-    input wire start,
-    output reg [511:0] seed_out,  // BIP39 seed final (64 bytes)
-    output reg done
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        start,
+    output reg [511:0] seed_out,
+    output reg         done
 );
+    localparam [63:0] IPAD64 = 64'h3636363636363636;
+    localparam [63:0] OPAD64 = 64'h5c5c5c5c5c5c5c5c;
 
-    localparam IDLE       = 3'd0,
-               INIT_SALT  = 3'd1,
-               U1_INNER   = 3'd2,
-               U1_OUTER   = 3'd3,
-               ITER_START = 3'd4,
-               U_INNER    = 3'd5,
-               U_OUTER    = 3'd6;
-    // Bloco com salt "mnemonic" + 0x00000001 (big-endian) padded com zeros até 128 bytes
-    reg [1023:0] first_block = 1024'h6d6e656d6f6e6963000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000;
-    
-    reg [2:0] state;
-    reg [11:0] iter;  // 0 a 4095 (agora cabe 2048)
-    reg [511:0] U, T;
+    // "mnemonic" (8 bytes) big-endian
+    localparam [63:0] MNEM = 64'h6d6e656d6f6e6963;
 
-    wire [511:0] hash;
-    reg [1023:0] message_in_reg;
-    reg [511:0] hash_in_reg;
+    // IV SHA-512 (H0..H7)
+    localparam [511:0] IV =
+        512'h6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179;
 
-    sha512_pipeline sha_inst (
+    localparam [11:0] ITER_MAX = 12'd2048;
+
+    // Bloco 1: K'⊕ipad / K'⊕opad, onde K' = "mnemonic" + zeros até 128B
+    localparam [1023:0] INNER1 = { (MNEM ^ IPAD64), {15{IPAD64}} };
+    localparam [1023:0] OUTER1 = { (MNEM ^ OPAD64), {15{OPAD64}} };
+
+    // Bloco 2 do U1 (inner):
+    // salt="mnemonic"(8) || INT(1)(4) = 12 bytes
+    // depois 0x80 e zeros; len = (128+12)*8 = 1120
+    localparam [1023:0] INNER2_SALT = {
+        MNEM,
+        64'h0000000180000000,     // INT(1)=00000001 + 0x80 + 3 zeros
+        {13{64'h0000000000000000}},
+        64'd1120
+    };
+
+    // Monta 2º bloco para mensagem de 64 bytes (digest):
+    // W0..W7=digest, W8=0x80..., W9..W14=0, W15=1536
+    function [1023:0] pack_digest_block;
+        input [511:0] dig;
+        begin
+            pack_digest_block = {
+                dig,                        // W0..W7
+                64'h8000000000000000,       // W8
+                {6{64'h0000000000000000}},   // W9..W14  <-- (AQUI estava teu bug)
+                64'd1536                     // W15
+            };
+        end
+    endfunction
+
+    // Interface com teu sha512_pipeline (compress 1 bloco)
+    reg  [1023:0] message_in_reg;
+    reg  [511:0]  hash_in_reg;
+    wire [511:0]  hash;
+
+    sha512_combinational sha_inst (
         .message_in(message_in_reg),
         .hash_in(hash_in_reg),
         .hash_out(hash)
     );
 
-    // ipad e opad XOR com password "mnemonic" (padded para 128 bytes)
-    localparam  BLOCK_BYTES = 128;
-    localparam  BLOCK_BITS  = BLOCK_BYTES*8;
-    
-    // "mnemonic" = 8 bytes
-    localparam [BLOCK_BITS-1:0] KEY_PAD =
-        { "mnemonic", { (BLOCK_BYTES-8){8'h00} } };   // 8 + 120 = 128 bytes
-    
-    localparam [BLOCK_BITS-1:0] IPAD = { BLOCK_BYTES{8'h36} }; // 128 bytes de 0x36
-    localparam [BLOCK_BITS-1:0] OPAD = { BLOCK_BYTES{8'h5c} }; // 128 bytes de 0x5c
-    
-    localparam [BLOCK_BITS-1:0] inner_block1 = KEY_PAD ^ IPAD;
-    localparam [BLOCK_BITS-1:0] inner_block2 = IPAD;          
-    localparam [BLOCK_BITS-1:0] outer_block1 = KEY_PAD ^ OPAD;
-    localparam [BLOCK_BITS-1:0] outer_block2 = OPAD;
+    // Estados pré-calculados (igual OpenCL GU/OU)
+    reg [511:0] GU;   // compress(IV, INNER1)
+    reg [511:0] OU;   // compress(IV, OUTER1)
 
-  always @(posedge clk or negedge rst_n) begin
+    reg [511:0] T;    // acumulador XOR
+    reg [11:0]  iter;
+
+    localparam S_IDLE        = 3'd0;
+    localparam S_INNER1      = 3'd1;
+    localparam S_OUTER1      = 3'd2;
+    localparam S_INNER2_U1   = 3'd3;
+    localparam S_OUTER2_U1   = 3'd4;
+    localparam S_INNER2_IT   = 3'd5;
+    localparam S_OUTER2_IT   = 3'd6;
+
+    reg [2:0] state;
+
+    always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state <= IDLE;
-            iter <= 0;
-            U <= 0;
-            T <= 0;
-            seed_out <= 0;
-            done <= 0;
+            state <= S_IDLE;
+            done <= 1'b0;
+            seed_out <= 512'd0;
+
+            message_in_reg <= 1024'd0;
+            hash_in_reg    <= 512'd0;
+
+            GU <= 512'd0;
+            OU <= 512'd0;
+
+            T <= 512'd0;
+            iter <= 12'd0;
         end else begin
-            done <= 0;
+            done <= 1'b0;
+
             case (state)
-                IDLE: if (start) state <= INIT_SALT;
+                S_IDLE: begin
+                    if (start) begin
+                        // GU = compress(IV, INNER1)
+                        message_in_reg <= INNER1;
+                        hash_in_reg    <= IV;
 
-                INIT_SALT: begin
-                    message_in_reg <= first_block;
-                    hash_in_reg <= 512'h6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179;
-                    state <= U1_INNER;
-                end
+                        T    <= 512'd0;
+                        iter <= 12'd0;
 
-                U1_INNER: begin
-                    U <= hash;  // U1 parcial
-                    message_in_reg <= outer_block1;
-                    hash_in_reg <= 512'h6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179;
-                    state <= U1_OUTER;
-                end
-
-                U1_OUTER: begin
-                    U <= hash;  // U1 completo
-                    T <= hash;  // T = U1
-                    iter <= 1;
-                    state <= ITER_START;
-                end
-
-                ITER_START: begin
-                    if (iter == 2048) begin  
-                        seed_out <= T;
-                        done <= 1;
-                        state <= IDLE;
-                    end else begin
-                        message_in_reg <= inner_block2;
-                        hash_in_reg <= U;
-                        state <= U_INNER;
+                        state <= S_INNER1;
                     end
                 end
 
-                U_INNER: begin
-                    U <= hash;
-                    message_in_reg <= outer_block2;
-                    hash_in_reg <= U;
-                    state <= U_OUTER;
+                // hash = GU
+                S_INNER1: begin
+                    GU <= hash;
+
+                    // OU = compress(IV, OUTER1)
+                    message_in_reg <= OUTER1;
+                    hash_in_reg    <= IV;
+
+                    state <= S_OUTER1;
                 end
 
-                U_OUTER: begin
-                    U <= hash;
-                    T <= T ^ hash;
-                    iter <= iter + 1;
-                    state <= ITER_START;
+                // hash = OU
+                S_OUTER1: begin
+                    OU <= hash;
+
+                    // inner digest U1: compress(GU, INNER2_SALT)
+                    message_in_reg <= INNER2_SALT;
+                    hash_in_reg    <= GU;
+
+                    state <= S_INNER2_U1;
                 end
 
-                default: state <= IDLE;
+                // hash = inner_digest(U1)
+                S_INNER2_U1: begin
+                    // outer U1: compress(OU, pack(inner_digest))
+                    message_in_reg <= pack_digest_block(hash);
+                    hash_in_reg    <= OU;
+
+                    state <= S_OUTER2_U1;
+                end
+
+                // hash = U1 completo
+                S_OUTER2_U1: begin
+                    T    <= hash;      // T = U1
+                    iter <= 12'd2;     // próximo é U2
+
+                    // inner digest U2: compress(GU, pack(U1))
+                    message_in_reg <= pack_digest_block(hash);
+                    hash_in_reg    <= GU;
+
+                    state <= S_INNER2_IT;
+                end
+
+                // hash = inner_digest(Ui)
+                S_INNER2_IT: begin
+                    // outer Ui: compress(OU, pack(inner_digest))
+                    message_in_reg <= pack_digest_block(hash);
+                    hash_in_reg    <= OU;
+
+                    state <= S_OUTER2_IT;
+                end
+
+                // hash = Ui completo
+                S_OUTER2_IT: begin
+                    if (iter == ITER_MAX) begin
+                        seed_out <= (T ^ hash);
+                        done     <= 1'b1;
+                        state    <= S_IDLE;
+                    end else begin
+                        T    <= (T ^ hash);
+                        iter <= iter + 12'd1;
+
+                        // próximo inner: compress(GU, pack(Ui))
+                        message_in_reg <= pack_digest_block(hash);
+                        hash_in_reg    <= GU;
+
+                        state <= S_INNER2_IT;
+                    end
+                end
+
+                default: state <= S_IDLE;
             endcase
         end
     end
 endmodule
 
-
-module sha512_pipeline (
+module sha512_combinational (
     input  wire [1023:0] message_in, // 16x64 (big-endian)
     input  wire [511:0]  hash_in,     // H0..H7
     output wire [511:0]  hash_out
