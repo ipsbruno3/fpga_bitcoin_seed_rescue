@@ -1,22 +1,21 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
 //
-//  Module Name: sha512_crypto
-//  Engineer: Bruno da Silva @ipsbruno3
-// 
-//  Create Date: 28.12.2025 19:01:15
-//  Project Name: bip39-pbkdf-verilog
+// Module Name: sha512_crypto
+// Engineer: Bruno da Silva @ipsbruno3
 //
-//  Revision 0.01 - File Created
-//  Comments: 
-//  This code uses the same algorithm as Bitcoin Cracking in my other repository,  meaning that all optimization adjustments are being made. 
-//  I'm initially testing with combinational cycles to run the seed tests in parallel, so each seed has a combinational process. 
-//  If the clocks are not >200MHz on intermediate FPGAs, I will refactor the logic to work with pipelines.
-//  For now we are only doing this for "mnemonic" entries (tests)
-//  DSP, Pipelines ainda não implementados
+// Create Date: 28.12.2025 19:01:15
+// Project Name: bip39-pbkdf-verilog
+//
+// Revision 0.01 - File Created
+// Comments:
+// This code uses the same algorithm as Bitcoin Cracking in my other repository, meaning that all optimization adjustments are being made.
+// I'm initially testing with combinational cycles to run the seed tests in parallel, so each seed has a combinational process.
+// If the clocks are not >200MHz on intermediate FPGAs, I will refactor the logic to work with pipelines.
+// For now we are only doing this for "mnemonic" entries (tests)
+// DSP and Pipelines not implemented yet
 //
 //////////////////////////////////////////////////////////////////////////////////
-
 
 module test;
     reg clk = 0;
@@ -26,7 +25,7 @@ module test;
     wire [511:0] seed_out;
     wire done;
 
-    // PBKDF2-HMAC-SHA512("mnemonic", "mnemonic", 2048, 64)
+    // Expected PBKDF2-HMAC-SHA512("mnemonic", "mnemonic", 2048 iterations, 64 bytes)
     localparam [511:0] EXPECT =
         512'h7ddd60748d5e7cfc8f6c823df5c2956e14365245e2c8bba5ea732bbd790392a3ef5bdd731380072dd54f50923a7164ea502acf9d74cd794570252cc64bc7f744;
 
@@ -38,12 +37,12 @@ module test;
         .done(done)
     );
 
-    always #5 clk = ~clk;
+    always #5 clk = ~clk;  // 100 MHz clock (period 10 ns)
 
     initial begin
-        // timeout bem folgado
+        // Generous timeout
         #2000000;
-        $display("TIMEOUT: done nao chegou.");
+        $display("TIMEOUT: done signal did not arrive.");
         $finish;
     end
 
@@ -57,9 +56,9 @@ module test;
         #10 start = 0;
 
         wait(done);
-        $display("DONE t=%0t ns", $time);
-        $display("OUT   = %h", seed_out);
-        $display("EXPECT= %h", EXPECT);
+        $display("DONE at t=%0t ns", $time);
+        $display("OUTPUT   = %h", seed_out);
+        $display("EXPECTED = %h", EXPECT);
 
         if (seed_out === EXPECT) $display("PASS ✅");
         else                    $display("FAIL ❌");
@@ -68,10 +67,9 @@ module test;
     end
 endmodule
 
-
 // ============================================================
-// PBKDF2-HMAC-SHA512 FIXO (mnemonic / mnemonic) - estilo OpenCL
-// (usa teu sha512_pipeline como compressão de 1 bloco encadeável)
+// Fixed PBKDF2-HMAC-SHA512 (passphrase="mnemonic", salt="mnemonic")
+// Uses the combinational SHA-512 compression module for single-block operations
 // ============================================================
 module pbkdf2_hmac_sha512_mnemonic (
     input  wire        clk,
@@ -86,41 +84,41 @@ module pbkdf2_hmac_sha512_mnemonic (
     // "mnemonic" (8 bytes) big-endian
     localparam [63:0] MNEM = 64'h6d6e656d6f6e6963;
 
-    // IV SHA-512 (H0..H7)
+    // SHA-512 initial hash values (H0..H7)
     localparam [511:0] IV =
         512'h6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179;
 
     localparam [11:0] ITER_MAX = 12'd2048;
 
-    // Bloco 1: K'⊕ipad / K'⊕opad, onde K' = "mnemonic" + zeros até 128B
+    // Block 1: K' ⊕ ipad / K' ⊕ opad, where K' = "mnemonic" padded to 128 bytes
     localparam [1023:0] INNER1 = { (MNEM ^ IPAD64), {15{IPAD64}} };
     localparam [1023:0] OUTER1 = { (MNEM ^ OPAD64), {15{OPAD64}} };
 
-    // Bloco 2 do U1 (inner):
-    // salt="mnemonic"(8) || INT(1)(4) = 12 bytes
-    // depois 0x80 e zeros; len = (128+12)*8 = 1120
+    // Block 2 for U1 (inner hash):
+    // salt = "mnemonic"(8) || INT(1)(4) = 12 bytes
+    // then 0x80 and zeros; total message length = 1120 bits
     localparam [1023:0] INNER2_SALT = {
         MNEM,
-        64'h0000000180000000,     // INT(1)=00000001 + 0x80 + 3 zeros
+        64'h0000000180000000,     // INT(1)=00000001 + 0x80 + padding
         {13{64'h0000000000000000}},
-        64'd1120
+        64'd1120                  // message length in bits
     };
 
-    // Monta 2º bloco para mensagem de 64 bytes (digest):
-    // W0..W7=digest, W8=0x80..., W9..W14=0, W15=1536
+    // Pack second block for a 64-byte digest message:
+    // W0..W7 = digest, W8 = 0x80..., W9..W14 = 0, W15 = 1536 bits
     function [1023:0] pack_digest_block;
         input [511:0] dig;
         begin
             pack_digest_block = {
                 dig,                        // W0..W7
-                64'h8000000000000000,       // W8
-                {6{64'h0000000000000000}},   // W9..W14  <-- (AQUI estava teu bug)
-                64'd1536                     // W15
+                64'h8000000000000000,       // W8 (0x80 padding start)
+                {6{64'h0000000000000000}},  // W9..W14
+                64'd1536                    // W15: message length in bits (128 bytes * 8)
             };
         end
     endfunction
 
-    // Interface com teu sha512_pipeline (compress 1 bloco)
+    // Interface with combinational SHA-512 compression module
     reg  [1023:0] message_in_reg;
     reg  [511:0]  hash_in_reg;
     wire [511:0]  hash;
@@ -131,11 +129,11 @@ module pbkdf2_hmac_sha512_mnemonic (
         .hash_out(hash)
     );
 
-    // Estados pré-calculados (igual OpenCL GU/OU)
+    // Pre-computed states (same as OpenCL BitcoinCracking GU/OU)
     reg [511:0] GU;   // compress(IV, INNER1)
     reg [511:0] OU;   // compress(IV, OUTER1)
 
-    reg [511:0] T;    // acumulador XOR
+    reg [511:0] T;    // XOR accumulator
     reg [11:0]  iter;
 
     localparam S_IDLE        = 3'd0;
@@ -168,7 +166,7 @@ module pbkdf2_hmac_sha512_mnemonic (
             case (state)
                 S_IDLE: begin
                     if (start) begin
-                        // GU = compress(IV, INNER1)
+                        // Compute GU = compress(IV, INNER1)
                         message_in_reg <= INNER1;
                         hash_in_reg    <= IV;
 
@@ -179,59 +177,53 @@ module pbkdf2_hmac_sha512_mnemonic (
                     end
                 end
 
-                // hash = GU
                 S_INNER1: begin
                     GU <= hash;
 
-                    // OU = compress(IV, OUTER1)
+                    // Compute OU = compress(IV, OUTER1)
                     message_in_reg <= OUTER1;
                     hash_in_reg    <= IV;
 
                     state <= S_OUTER1;
                 end
 
-                // hash = OU
                 S_OUTER1: begin
                     OU <= hash;
 
-                    // inner digest U1: compress(GU, INNER2_SALT)
+                    // Inner U1: compress(GU, INNER2_SALT)
                     message_in_reg <= INNER2_SALT;
                     hash_in_reg    <= GU;
 
                     state <= S_INNER2_U1;
                 end
 
-                // hash = inner_digest(U1)
                 S_INNER2_U1: begin
-                    // outer U1: compress(OU, pack(inner_digest))
+                    // Outer U1: compress(OU, pack(inner_digest))
                     message_in_reg <= pack_digest_block(hash);
                     hash_in_reg    <= OU;
 
                     state <= S_OUTER2_U1;
                 end
 
-                // hash = U1 completo
                 S_OUTER2_U1: begin
                     T    <= hash;      // T = U1
-                    iter <= 12'd2;     // próximo é U2
+                    iter <= 12'd2;     // Next is U2
 
-                    // inner digest U2: compress(GU, pack(U1))
+                    // Inner U2: compress(GU, pack(U1))
                     message_in_reg <= pack_digest_block(hash);
                     hash_in_reg    <= GU;
 
                     state <= S_INNER2_IT;
                 end
 
-                // hash = inner_digest(Ui)
                 S_INNER2_IT: begin
-                    // outer Ui: compress(OU, pack(inner_digest))
+                    // Outer Ui: compress(OU, pack(inner_digest))
                     message_in_reg <= pack_digest_block(hash);
                     hash_in_reg    <= OU;
 
                     state <= S_OUTER2_IT;
                 end
 
-                // hash = Ui completo
                 S_OUTER2_IT: begin
                     if (iter == ITER_MAX) begin
                         seed_out <= (T ^ hash);
@@ -241,7 +233,7 @@ module pbkdf2_hmac_sha512_mnemonic (
                         T    <= (T ^ hash);
                         iter <= iter + 12'd1;
 
-                        // próximo inner: compress(GU, pack(Ui))
+                        // Next inner: compress(GU, pack(Ui))
                         message_in_reg <= pack_digest_block(hash);
                         hash_in_reg    <= GU;
 
@@ -255,15 +247,14 @@ module pbkdf2_hmac_sha512_mnemonic (
     end
 endmodule
 
+// Combinational SHA-512 compression function (single 1024-bit block)
 module sha512_combinational (
-    input  wire [1023:0] message_in, // 16x64 (big-endian)
-    input  wire [511:0]  hash_in,     // H0..H7
-    output wire [511:0]  hash_out
+    input  wire [1023:0] message_in, // 16x64-bit words (big-endian)
+    input  wire [511:0]  hash_in,     // Initial H0..H7
+    output wire [511:0]  hash_out    // Final hash after one compression
 );
 
-    // -------------------------
-    // Split H (big-endian)
-    // -------------------------
+    // Split initial hash values (big-endian)
     wire [63:0] H0 = hash_in[511:448];
     wire [63:0] H1 = hash_in[447:384];
     wire [63:0] H2 = hash_in[383:320];
@@ -273,9 +264,7 @@ module sha512_combinational (
     wire [63:0] H6 = hash_in[127:64];
     wire [63:0] H7 = hash_in[63:0];
 
-    // -------------------------
-    // W0..W15 (big-endian)
-    // -------------------------
+    // Message schedule W0..W15 (big-endian)
     wire [63:0] W0  = message_in[1023:960];
     wire [63:0] W1  = message_in[959:896];
     wire [63:0] W2  = message_in[895:832];
@@ -293,26 +282,16 @@ module sha512_combinational (
     wire [63:0] W14 = message_in[127:64];
     wire [63:0] W15 = message_in[63:0];
 
- 
-
-    // -------------------------
-    // L0/L1 usando concat para rotr
-    // -------------------------
+    // Sigma0 and Sigma1 functions
     function automatic [63:0] L0(input [63:0] x);
-        begin
-            L0 = {x[0],    x[63:1]}  ^ {x[7:0],  x[63:8]}  ^ (x >> 7);
-        end
+        L0 = {x[0],    x[63:1]}  ^ {x[7:0],  x[63:8]}  ^ (x >> 7);
     endfunction
 
     function automatic [63:0] L1(input [63:0] x);
-        begin
-            L1 = {x[18:0], x[63:19]} ^ {x[60:0], x[63:61]} ^ (x >> 6);
-        end
+        L1 = {x[18:0], x[63:19]} ^ {x[60:0], x[63:61]} ^ (x >> 6);
     endfunction
 
-    // -------------------------
-    // RoR macro style (atualiza só d e h)
-    // -------------------------
+    // Round operation (only updates d and h)
     task automatic RoR(
         inout [63:0] a, b, c, d, e, f, g, h,
         input [63:0] w,
@@ -333,9 +312,7 @@ module sha512_combinational (
         end
     endtask
 
-    // -------------------------
-    // W16..W79 e A0..A7 (procedurais)
-    // -------------------------
+    // Message schedule W16..W79 and working variables A0..A7
     reg [63:0] W16, W17, W18, W19, W20, W21, W22, W23;
     reg [63:0] W24, W25, W26, W27, W28, W29, W30, W31;
     reg [63:0] W32, W33, W34, W35, W36, W37, W38, W39;
@@ -348,78 +325,78 @@ module sha512_combinational (
     reg [63:0] A0, A1, A2, A3, A4, A5, A6, A7;
 
     always @* begin
-        // ---- W schedule (igual seu OpenCL) ----
-        W16 = (W0  + L0(W1)  + W9  + L1(W14));
-        W17 = (W1  + L0(W2)  + W10 + L1(W15));
-        W18 = (W2  + L0(W3)  + W11 + L1(W16));
-        W19 = (W3  + L0(W4)  + W12 + L1(W17));
-        W20 = (W4  + L0(W5)  + W13 + L1(W18));
-        W21 = (W5  + L0(W6)  + W14 + L1(W19));
-        W22 = (W6  + L0(W7)  + W15 + L1(W20));
-        W23 = (W7  + L0(W8)  + W16 + L1(W21));
-        W24 = (W8  + L0(W9)  + W17 + L1(W22));
-        W25 = (W9  + L0(W10) + W18 + L1(W23));
-        W26 = (W10 + L0(W11) + W19 + L1(W24));
-        W27 = (W11 + L0(W12) + W20 + L1(W25));
-        W28 = (W12 + L0(W13) + W21 + L1(W26));
-        W29 = (W13 + L0(W14) + W22 + L1(W27));
-        W30 = (W14 + L0(W15) + W23 + L1(W28));
-        W31 = (W15 + L0(W16) + W24 + L1(W29));
+        // Message schedule extension
+        W16 = W0  + L0(W1)  + W9  + L1(W14);
+        W17 = W1  + L0(W2)  + W10 + L1(W15);
+        W18 = W2  + L0(W3)  + W11 + L1(W16);
+        W19 = W3  + L0(W4)  + W12 + L1(W17);
+        W20 = W4  + L0(W5)  + W13 + L1(W18);
+        W21 = W5  + L0(W6)  + W14 + L1(W19);
+        W22 = W6  + L0(W7)  + W15 + L1(W20);
+        W23 = W7  + L0(W8)  + W16 + L1(W21);
+        W24 = W8  + L0(W9)  + W17 + L1(W22);
+        W25 = W9  + L0(W10) + W18 + L1(W23);
+        W26 = W10 + L0(W11) + W19 + L1(W24);
+        W27 = W11 + L0(W12) + W20 + L1(W25);
+        W28 = W12 + L0(W13) + W21 + L1(W26);
+        W29 = W13 + L0(W14) + W22 + L1(W27);
+        W30 = W14 + L0(W15) + W23 + L1(W28);
+        W31 = W15 + L0(W16) + W24 + L1(W29);
 
-        W32 = (W16 + L0(W17) + W25 + L1(W30));
-        W33 = (W17 + L0(W18) + W26 + L1(W31));
-        W34 = (W18 + L0(W19) + W27 + L1(W32));
-        W35 = (W19 + L0(W20) + W28 + L1(W33));
-        W36 = (W20 + L0(W21) + W29 + L1(W34));
-        W37 = (W21 + L0(W22) + W30 + L1(W35));
-        W38 = (W22 + L0(W23) + W31 + L1(W36));
-        W39 = (W23 + L0(W24) + W32 + L1(W37));
-        W40 = (W24 + L0(W25) + W33 + L1(W38));
-        W41 = (W25 + L0(W26) + W34 + L1(W39));
-        W42 = (W26 + L0(W27) + W35 + L1(W40));
-        W43 = (W27 + L0(W28) + W36 + L1(W41));
-        W44 = (W28 + L0(W29) + W37 + L1(W42));
-        W45 = (W29 + L0(W30) + W38 + L1(W43));
-        W46 = (W30 + L0(W31) + W39 + L1(W44));
-        W47 = (W31 + L0(W32) + W40 + L1(W45));
-        W48 = (W32 + L0(W33) + W41 + L1(W46));
-        W49 = (W33 + L0(W34) + W42 + L1(W47));
-        W50 = (W34 + L0(W35) + W43 + L1(W48));
-        W51 = (W35 + L0(W36) + W44 + L1(W49));
-        W52 = (W36 + L0(W37) + W45 + L1(W50));
-        W53 = (W37 + L0(W38) + W46 + L1(W51));
-        W54 = (W38 + L0(W39) + W47 + L1(W52));
-        W55 = (W39 + L0(W40) + W48 + L1(W53));
-        W56 = (W40 + L0(W41) + W49 + L1(W54));
-        W57 = (W41 + L0(W42) + W50 + L1(W55));
-        W58 = (W42 + L0(W43) + W51 + L1(W56));
-        W59 = (W43 + L0(W44) + W52 + L1(W57));
-        W60 = (W44 + L0(W45) + W53 + L1(W58));
-        W61 = (W45 + L0(W46) + W54 + L1(W59));
-        W62 = (W46 + L0(W47) + W55 + L1(W60));
-        W63 = (W47 + L0(W48) + W56 + L1(W61));
-        W64 = (W48 + L0(W49) + W57 + L1(W62));
-        W65 = (W49 + L0(W50) + W58 + L1(W63));
-        W66 = (W50 + L0(W51) + W59 + L1(W64));
-        W67 = (W51 + L0(W52) + W60 + L1(W65));
-        W68 = (W52 + L0(W53) + W61 + L1(W66));
-        W69 = (W53 + L0(W54) + W62 + L1(W67));
-        W70 = (W54 + L0(W55) + W63 + L1(W68));
-        W71 = (W55 + L0(W56) + W64 + L1(W69));
-        W72 = (W56 + L0(W57) + W65 + L1(W70));
-        W73 = (W57 + L0(W58) + W66 + L1(W71));
-        W74 = (W58 + L0(W59) + W67 + L1(W72));
-        W75 = (W59 + L0(W60) + W68 + L1(W73));
-        W76 = (W60 + L0(W61) + W69 + L1(W74));
-        W77 = (W61 + L0(W62) + W70 + L1(W75));
-        W78 = (W62 + L0(W63) + W71 + L1(W76));
-        W79 = (W63 + L0(W64) + W72 + L1(W77));
+        W32 = W16 + L0(W17) + W25 + L1(W30);
+        W33 = W17 + L0(W18) + W26 + L1(W31);
+        W34 = W18 + L0(W19) + W27 + L1(W32);
+        W35 = W19 + L0(W20) + W28 + L1(W33);
+        W36 = W20 + L0(W21) + W29 + L1(W34);
+        W37 = W21 + L0(W22) + W30 + L1(W35);
+        W38 = W22 + L0(W23) + W31 + L1(W36);
+        W39 = W23 + L0(W24) + W32 + L1(W37);
+        W40 = W24 + L0(W25) + W33 + L1(W38);
+        W41 = W25 + L0(W26) + W34 + L1(W39);
+        W42 = W26 + L0(W27) + W35 + L1(W40);
+        W43 = W27 + L0(W28) + W36 + L1(W41);
+        W44 = W28 + L0(W29) + W37 + L1(W42);
+        W45 = W29 + L0(W30) + W38 + L1(W43);
+        W46 = W30 + L0(W31) + W39 + L1(W44);
+        W47 = W31 + L0(W32) + W40 + L1(W45);
+        W48 = W32 + L0(W33) + W41 + L1(W46);
+        W49 = W33 + L0(W34) + W42 + L1(W47);
+        W50 = W34 + L0(W35) + W43 + L1(W48);
+        W51 = W35 + L0(W36) + W44 + L1(W49);
+        W52 = W36 + L0(W37) + W45 + L1(W50);
+        W53 = W37 + L0(W38) + W46 + L1(W51);
+        W54 = W38 + L0(W39) + W47 + L1(W52);
+        W55 = W39 + L0(W40) + W48 + L1(W53);
+        W56 = W40 + L0(W41) + W49 + L1(W54);
+        W57 = W41 + L0(W42) + W50 + L1(W55);
+        W58 = W42 + L0(W43) + W51 + L1(W56);
+        W59 = W43 + L0(W44) + W52 + L1(W57);
+        W60 = W44 + L0(W45) + W53 + L1(W58);
+        W61 = W45 + L0(W46) + W54 + L1(W59);
+        W62 = W46 + L0(W47) + W55 + L1(W60);
+        W63 = W47 + L0(W48) + W56 + L1(W61);
+        W64 = W48 + L0(W49) + W57 + L1(W62);
+        W65 = W49 + L0(W50) + W58 + L1(W63);
+        W66 = W50 + L0(W51) + W59 + L1(W64);
+        W67 = W51 + L0(W52) + W60 + L1(W65);
+        W68 = W52 + L0(W53) + W61 + L1(W66);
+        W69 = W53 + L0(W54) + W62 + L1(W67);
+        W70 = W54 + L0(W55) + W63 + L1(W68);
+        W71 = W55 + L0(W56) + W64 + L1(W69);
+        W72 = W56 + L0(W57) + W65 + L1(W70);
+        W73 = W57 + L0(W58) + W66 + L1(W71);
+        W74 = W58 + L0(W59) + W67 + L1(W72);
+        W75 = W59 + L0(W60) + W68 + L1(W73);
+        W76 = W60 + L0(W61) + W69 + L1(W74);
+        W77 = W61 + L0(W62) + W70 + L1(W75);
+        W78 = W62 + L0(W63) + W71 + L1(W76);
+        W79 = W63 + L0(W64) + W72 + L1(W77);
 
-        // ---- init A regs ----
+        // Initialize working variables
         A0 = H0; A1 = H1; A2 = H2; A3 = H3;
         A4 = H4; A5 = H5; A6 = H6; A7 = H7;
 
-        // ---- 80 rounds ("rotação de argumentos manualmente") ----
+        // 80 compression rounds (manual argument rotation)
         RoR(A0, A1, A2, A3, A4, A5, A6, A7, W0,  64'h428a2f98d728ae22);
         RoR(A7, A0, A1, A2, A3, A4, A5, A6, W1,  64'h7137449123ef65cd);
         RoR(A6, A7, A0, A1, A2, A3, A4, A5, W2,  64'hb5c0fbcfec4d3b2f);
@@ -438,7 +415,6 @@ module sha512_combinational (
         RoR(A2, A3, A4, A5, A6, A7, A0, A1, W14, 64'h9bdc06a725c71235);
         RoR(A1, A2, A3, A4, A5, A6, A7, A0, W15, 64'hc19bf174cf692694);
 
-        // W16..W79:
         RoR(A0, A1, A2, A3, A4, A5, A6, A7, W16, 64'he49b69c19ef14ad2);
         RoR(A7, A0, A1, A2, A3, A4, A5, A6, W17, 64'hefbe4786384f25e3);
         RoR(A6, A7, A0, A1, A2, A3, A4, A5, W18, 64'h0fc19dc68b8cd5b5);
@@ -513,7 +489,7 @@ module sha512_combinational (
 
     end
 
-    // ---- feed-forward final ----
+    // Final add (feed-forward)
     assign hash_out = {
         A0 + H0, A1 + H1, A2 + H2, A3 + H3,
         A4 + H4, A5 + H5, A6 + H6, A7 + H7
