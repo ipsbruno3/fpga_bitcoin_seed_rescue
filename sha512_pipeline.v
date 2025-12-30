@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
 //
 //  Module Name: sha512_compress_pipe
@@ -18,15 +19,13 @@
 module sha512_compress_pipe (
     input  wire         clk,
     input  wire         rst_n,
-    input  wire         start,          // pulso 1 a
-    output reg  [31:0]  H_out,          // H'0..H'7 big-endian
-    output reg          done,            // pulso 1 ciclo
-    output reg          busy
+    input  wire         start,          // 1-cycle pulse to begin compression
+    output reg  [511:0] H_out,          // Final H'0..H'7 (big-endian)
+    output reg          done,           // 1-cycle pulse when finished
+    output reg          busy            // High while processing
 );
-    wire [1023:0] block_in;
-    wire [511:0]  H_in;
-    
-    // -------- helpers ----------
+
+    // -------- Helper functions ----------
     function [63:0] rotr;
         input [63:0] x;
         input integer n;
@@ -91,14 +90,18 @@ module sha512_compress_pipe (
         K[76]=64'h4cc5d4becb3e42b6; K[77]=64'h597f299cfc657e2a; K[78]=64'h5fcb6fab3ad6faec; K[79]=64'h6c44198c4a475817;
     end
 
-    // -------- state ----------
+    // -------- State registers ----------
     reg [63:0] a,b,c,d,e,f,g,h;
     reg [63:0] H0b,H1b,H2b,H3b,H4b,H5b,H6b,H7b;
 
     reg [63:0] W [0:15];
-    reg [6:0]  t;
+    reg [6:0]  t;  // round counter (0 to 79)
 
-    // split H_in big-endian
+    // Inputs (to be connected externally)
+    input  wire [1023:0] block_in;  // 1024-bit padded message block
+    input  wire [511:0]  H_in;      // Initial hash values H0..H7
+
+    // Split initial hash values (big-endian)
     wire [63:0] H0 = H_in[511:448];
     wire [63:0] H1 = H_in[447:384];
     wire [63:0] H2 = H_in[383:320];
@@ -108,32 +111,32 @@ module sha512_compress_pipe (
     wire [63:0] H6 = H_in[127:64];
     wire [63:0] H7 = H_in[63:0];
 
-    // temporários
+    // Temporary variables
     reg [63:0] wt, w_new, t1v, t2v;
     reg [63:0] a_n,b_n,c_n,d_n,e_n,f_n,g_n,h_n;
     reg [3:0]  idx, idx2, idx7, idx15, idx16;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            done <= 1'b0;
-            busy <= 1'b0;
+            done  <= 1'b0;
+            busy  <= 1'b0;
             H_out <= 512'd0;
-            t <= 7'd0;
-            a<=0;b<=0;c<=0;d<=0;e<=0;f<=0;g<=0;h<=0;
-            H0b<=0;H1b<=0;H2b<=0;H3b<=0;H4b<=0;H5b<=0;H6b<=0;H7b<=0;
+            t     <= 7'd0;
+            a<=0; b<=0; c<=0; d<=0; e<=0; f<=0; g<=0; h<=0;
+            H0b<=0; H1b<=0; H2b<=0; H3b<=0; H4b<=0; H5b<=0; H6b<=0; H7b<=0;
         end else begin
             done <= 1'b0;
 
             if (start && !busy) begin
-                // base H
+                // Save initial hash values for final add
                 H0b <= H0; H1b <= H1; H2b <= H2; H3b <= H3;
                 H4b <= H4; H5b <= H5; H6b <= H6; H7b <= H7;
 
-                // init vars
+                // Initialize working variables
                 a <= H0; b <= H1; c <= H2; d <= H3;
                 e <= H4; f <= H5; g <= H6; h <= H7;
 
-                // load W0..W15 (sem -:)
+                // Load W0..W15 from input block
                 W[0]  <= block_in[1023:960];
                 W[1]  <= block_in[959:896];
                 W[2]  <= block_in[895:832];
@@ -151,10 +154,11 @@ module sha512_compress_pipe (
                 W[14] <= block_in[127:64];
                 W[15] <= block_in[63:0];
 
-                t <= 7'd0;
+                t    <= 7'd0;
                 busy <= 1'b1;
             end
             else if (busy) begin
+                // Index calculations (mod 16)
                 idx   = t[3:0];
                 idx2  = (t - 7'd2)  & 4'hF;
                 idx7  = (t - 7'd7)  & 4'hF;
@@ -181,15 +185,19 @@ module sha512_compress_pipe (
                 g_n = f;
                 h_n = g;
 
+                // Update message schedule for next rounds (t >= 16)
                 if (t >= 7'd16) begin
                     W[idx] <= w_new;
                 end
 
+                // Update working variables
                 a <= a_n; b <= b_n; c <= c_n; d <= d_n;
                 e <= e_n; f <= f_n; g <= g_n; h <= h_n;
 
                 if (t == 7'd79) begin
-                    H_out <= {a_n + H0b};
+                    // Final add (feed-forward)
+                    H_out <= { (a_n + H0b), (b_n + H1b), (c_n + H2b), (d_n + H3b),
+                               (e_n + H4b), (f_n + H5b), (g_n + H6b), (h_n + H7b) };
                     busy <= 1'b0;
                     done <= 1'b1;
                 end else begin
