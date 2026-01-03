@@ -1,4 +1,4 @@
-# 🔐 FPGA secp256k1 Public Key Derivation Engine
+# 🔐 FPGA Bitcoin Seed Rescue
 
 ![Verilog](https://img.shields.io/badge/Verilog-HDL-blue)
 ![FPGA](https://img.shields.io/badge/Platform-FPGA%20%2F%20ASIC-green)
