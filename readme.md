@@ -80,7 +80,7 @@ This project is released under the MIT License. See [LICENSE](LICENSE) for detai
 
 Made with ❤️ for the hardware security community
 
-</div>
-
 
 PRs, issues, and suggestions are always welcome! 🚀
+</div>
+
