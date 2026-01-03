@@ -1,107 +1,50 @@
+## Objetivo do projeto
 
+O repositório reúne blocos de hardware escritos em Verilog para recuperar seeds BIP-39 de forma **energicamente eficiente**, usando FPGA/ASIC em vez de clusters de GPU. A ideia é reduzir o custo marginal por tentativa e tornar viáveis recuperações legítimas de carteiras que perderam 2–5 palavras ou pequenas quantias que não justificam infraestruturas caras.
 
-
-**Why This Project Exists** 🚀
-
-After more than a year developing high-performance applications and orchestrating large-scale infrastructure to recover **2, 3, 4, and even 5 missing words** from seeds, one clear limitation emerged with GPU/cluster-based approaches: **the total execution cost scales rapidly**.
-
-In practice, many recoveries only become economically viable when the value at stake is high. At the same time, there is a steady stream of cases involving **smaller amounts** — a few thousand dollars — where the cost (energy, hardware, time, and infrastructure) makes the attempt disproportionate. For **four missing words**, the operation can become unfeasible for most people.
-
-This project was born from that realization: **reduce the marginal cost per attempt** and make legitimate seed recovery **more accessible**, shifting the focus from “expensive brute-force on GPUs” to **energy efficiency and purpose-built hardware**.
+- **Foco:** pipelines SHA-256/SHA-512, derivação PBKDF2-HMAC-SHA512 e geração de palavras BIP-39 a partir de entropia de 128 bits.
+- **Uso ético:** somente para recuperação com prova de propriedade e consentimento explícito.
 
 ---
 
-**FPGA vs GPU: 10 Reasons FPGA Can Be Superior for This Workload** ⚡
+## Visão geral dos arquivos
 
-1. **Energy Efficiency (Performance per Watt)**  
-   For fixed, repetitive algorithms, FPGAs typically deliver a much better work/energy ratio than general-purpose GPUs.
-
-2. **Problem-Specific Dedicated Architecture**  
-   In an FPGA, the logic is built to perform exactly the required function — no wasted cycles on unused general-purpose blocks.
-
-3. **Predictable and Deterministic Performance**  
-   Stable, repeatable timing makes cost estimation, time planning, and operational control far more reliable.
-
-4. **Reduced Dependency on Software Stack**  
-   Minimal reliance on drivers, runtimes, library versions, or ecosystem changes that can introduce instability.
-
-5. **Controlled Scalability via Replication**  
-   Capacity can be increased by replicating “lanes” within the chip’s resources, with direct control over area and load balancing.
-
-6. **Fine-Grained Optimization**  
-   Critical-path tuning, register balancing, internal organization, and resource/memory usage are fully under control.
-
-7. **Lower Long-Term Operational Cost**  
-   In continuous 24/7 operation, savings in electricity and cooling can offset the initial hardware difference.
-
-8. **Lower Heat Generation per Work Unit**  
-   Reduced thermal load means lighter requirements for ventilation, cooling, and rack density.
-
-9. **Clear Path to Standardization and Auditability**  
-   A deterministic, public design facilitates validation, verification, and transparent evolution — ideal for a community-driven initiative.
-
-10. **Natural Bridge to ASIC**  
-    FPGA serves as the perfect validation platform before transitioning to ASIC, where efficiency and cost-per-unit improve dramatically.
-
-
-
-<img width="1490" height="889" alt="image" src="https://github.com/user-attachments/assets/4b32b940-6e44-4975-a3a8-efb13362f626" />
-No magic here — just circuits doing exactly what you tell them to do. 💻
-
+| Arquivo | Papel | O que ele faz |
+| --- | --- | --- |
+| `generate.sv` | Geração de palavras BIP-39 | Converte 128 bits de entropia + checksum em 12 índices de 11 bits e busca cada palavra na ROM. Inclui `tb_words_stream_12`, um testbench que calcula o checksum via `sha256_firstbyte_128`, aciona o fluxo e imprime a frase completa. |
+| `sha256.sv` | SHA-256 compacto (1 bloco) | Implementa `sha256_firstbyte_128`, uma engine simples que processa 128 bits de entropia (mais padding) e expõe apenas o **primeiro byte do digest**, usado como checksum de 4 bits na geração de palavras. Sinaliza `busy/done` para controle fácil em hardware. |
+| `pbkdf_10_cycles.sv` | PBKDF2 iterativo (10 ciclos por compressão) | Prova de conceito de PBKDF2-HMAC-SHA512 para a senha e sal “mnemonic”. Usa um núcleo SHA-512 de 10 ciclos (`sha512_10cycle`) e FSM que itera 2048 vezes, acumulando `T` com XOR dos blocos U1..U2048. Inclui testbench que compara a saída com o vetor oficial. |
+| `pbkdf_combinational.sv` | PBKDF2 combinacional | Versão alternativa para o mesmo caso de teste “mnemonic”, mas usando compressões SHA-512 combinacionais (um ciclo por bloco). Mantém o mesmo testbench de validação da derivação de seed. |
 
 ---
 
-**GPUs Are Excellent — But Energy Cost Is the Real Bottleneck** 🔋
+## Como as peças se encaixam
 
-GPUs remain a fantastic choice for rapid prototyping and high initial throughput, backed by a mature ecosystem. However, in long-running, repetitive workloads, **raw speed** gives way to **energy and operational cost** as the dominant factor.
+1. **Geração de frase de 12 palavras**
+   - O módulo `pack_128plus4_to_12x11` (em `generate.sv`) fatia 128 bits de entropia mais 4 bits de checksum em 12 índices BIP-39.
+   - `words_stream_12` sequencia esses índices para a ROM de palavras (`palavras_rom`) e retorna cada palavra como vetor de 72 bits, com `word_valid` pulsando a cada saída e `done` fixando ao final das 12 palavras.
+   - O testbench `tb_words_stream_12` calcula o checksum com `sha256_firstbyte_128`, aplica a entrada e imprime a frase formatada, servindo como exemplo de integração entre SHA-256 e o gerador de palavras.
 
-This project prioritizes **efficiency**. In practice: while a modern GPU often runs in the hundreds of watts (sometimes approaching ~600 W), a well-designed FPGA — and especially a dedicated ASIC — can achieve the same goal using a fraction of the power, because it executes only what is strictly necessary.
+2. **Derivação PBKDF2-HMAC-SHA512**
+   - Ambos os arquivos `pbkdf_10_cycles.sv` e `pbkdf_combinational.sv` implementam a derivação do seed BIP-39 padrão (senha = sal = “mnemonic” e 2048 iterações), variando apenas na arquitetura do núcleo SHA-512 (pipelining de 10 ciclos vs. bloco combinacional).
+   - Cada versão inclui um testbench que inicializa `start`, espera `done` e compara `seed_out` com o vetor esperado, imprimindo PASS/FAIL na simulação.
 
-This approach expands the scope: making recovery economically feasible even for smaller-value cases, not just high-stakes ones.
-
----
-
-**Project Status** 📊
-
-We are currently defining the core architecture and repository structure. Some code remains experimental and will be progressively organized, tested, and documented as modules stabilize.
-
-Technical contributions, reviews, suggestions, and discussions are very welcome. The goal is to keep this project **public, open, and collaborative**, with verifiable results.
+3. **SHA-256 para checksum**
+   - `sha256_firstbyte_128` processa uma mensagem de 128 bits (mais padding interno) e fornece o primeiro byte do digest. O testbench em `generate.sv` utiliza os bits [7:4] como checksum BIP-39, assegurando frases válidas.
 
 ---
 
-**Ethics, Scope, and Methodology (Critical)** 🔒
+## Status atual e próximos passos
 
-This project is **strictly** for **legitimate recovery** — never for random seed scanning or unauthorized access. We operate only with clear proof of ownership and explicit consent.
-
-In real cases, intensive computation is always preceded by **forensic and diagnostic work** to drastically reduce the search space responsibly:
-
-- Collection and analysis of old **HDs/SSDs**, USB drives, and local backups (disk images when possible)
-- Examination of crypto-related artifacts: old wallets, configs, logs, browser extensions
-- Authorized access to client cloud data (Drive/iCloud/OneDrive/Dropbox)
-- Compilation of **likely passwords** and usage patterns from the relevant period
-- Contextual information: creation date, software/wallet/version/environment
-- Any physical evidence: notes, torn paper, partial words, language, estimated word length, etc.
-
-The goal of diagnostics is clear: turn a huge problem into a **much smaller, feasible one** with realistic cost and probability estimates — no false promises.
+- Os módulos já simulam os fluxos essenciais (geração de palavras e PBKDF2). Parte do código é experimental e pode ser reestruturada para pipelines, múltiplas instâncias em paralelo e integração com ROM de palavras completa.
+- Contribuições são bem-vindas em otimização (latência × área), integração com toolflows de FPGA/ASIC e cobertura de testes.
 
 ---
 
-**How You Can Help** 🤝
+## Colaboração e ética
 
-**Technical Contributions**  
-We welcome collaborators experienced in:  
-- Applied cryptography and performance engineering  
-- Verilog/HDL (FPGA) and synthesis/implementation flows  
-- OpenCL (kernel development and optimization)  
-- Validation, testing, and benchmarking infrastructure  
+- **Contribua tecnicamente:** Verilog/HDL, cripto aplicada, flows de síntese/implementação, validação e benchmarking.
+- **Suporte opcional:** `bc1qc6yypnwtvfd09ashe73dlg5u3msr5c6xxnxxcv` (transparência sobre uso de recursos será priorizada).
+- **Uso responsável:** Apenas recuperação legítima, com comprovação e consentimento. Cada caso deve começar por diagnóstico (artefatos digitais, contexto, senhas prováveis) para reduzir o espaço de busca antes de gastar energia computacional.
 
-Suggestions, reviews, and PRs are highly appreciated.
-
-**Optional Financial Support**  
-If you would like to help fund hardware, tools, and prototyping/validation phases:  
-Wallet: `bc1qc6yypnwtvfd09ashe73dlg5u3msr5c6xxnxxcv`
-
-**Transparency:** Milestones, goals, and resource usage will be documented publicly whenever possible.  
-**Important:** Contributions are voluntary and **not** investment or contractual promises. Any future production plans (including ASIC) depend on technical feasibility, costs, and execution.
-
-PRs, issues, and suggestions are always welcome! 🚀
+PRs, issues e sugestões são sempre bem-vindos! 🚀
