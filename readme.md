@@ -1,4 +1,13 @@
-## Project goal
+# 🔐 FPGA secp256k1 Public Key Derivation Engine
+
+![Verilog](https://img.shields.io/badge/Verilog-HDL-blue)
+![FPGA](https://img.shields.io/badge/Platform-FPGA%20%2F%20ASIC-green)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+![Status](https://img.shields.io/badge/Status-Tested-brightgreen)
+
+>  **⚡ Energy-Efficient Hardware Acceleration of Bitcoin BIP-39 for Seed Phrase Recovery**
+
+## 📖 Overview
 
 This repository collects Verilog hardware blocks to recover BIP-39 seeds in an **energy-efficient** way, using FPGA/ASIC instead of GPU clusters. The idea is to reduce the marginal cost per attempt and make legitimate recoveries viable for wallets that lost 2–5 words or for small amounts that do not justify expensive infrastructure.
 
@@ -7,7 +16,8 @@ This repository collects Verilog hardware blocks to recover BIP-39 seeds in an *
 
 ---
 
-## File overview
+
+### 🎯 Files overview
 
 | File | Role | What it does |
 | --- | --- | --- |
@@ -46,5 +56,31 @@ This repository collects Verilog hardware blocks to recover BIP-39 seeds in an *
 - **Contribute technically:** Verilog/HDL, applied crypto, synthesis/implementation flows, validation, and benchmarking.
 - **Optional support:** `bc1qc6yypnwtvfd09ashe73dlg5u3msr5c6xxnxxcv` (transparency about resource use will be prioritized).
 - **Responsible use:** Only legitimate recovery, with proof and consent. Each case should start with diagnostics (digital artifacts, context, likely passwords) to reduce the search space before spending computational energy.
+
+
+
+
+## 📧 Contact
+
+For questions, suggestions, or collaboration opportunities:
+
+**Email**: 📩 [bsbruno@proton.me](mailto:bsbruno@proton.me)
+
+---
+
+## 📄 License
+
+This project is released under the MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+
+**⭐ If this project helped you, please consider giving it a star! ⭐**
+
+Made with ❤️ for the hardware security community
+
+</div>
+
 
 PRs, issues, and suggestions are always welcome! 🚀
