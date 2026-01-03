@@ -1,50 +1,50 @@
-## Objetivo do projeto
+## Project goal
 
-O repositório reúne blocos de hardware escritos em Verilog para recuperar seeds BIP-39 de forma **energicamente eficiente**, usando FPGA/ASIC em vez de clusters de GPU. A ideia é reduzir o custo marginal por tentativa e tornar viáveis recuperações legítimas de carteiras que perderam 2–5 palavras ou pequenas quantias que não justificam infraestruturas caras.
+This repository collects Verilog hardware blocks to recover BIP-39 seeds in an **energy-efficient** way, using FPGA/ASIC instead of GPU clusters. The idea is to reduce the marginal cost per attempt and make legitimate recoveries viable for wallets that lost 2–5 words or for small amounts that do not justify expensive infrastructure.
 
-- **Foco:** pipelines SHA-256/SHA-512, derivação PBKDF2-HMAC-SHA512 e geração de palavras BIP-39 a partir de entropia de 128 bits.
-- **Uso ético:** somente para recuperação com prova de propriedade e consentimento explícito.
+- **Focus:** SHA-256/SHA-512 pipelines, PBKDF2-HMAC-SHA512 derivation, and BIP-39 word generation from 128-bit entropy.
+- **Ethical use:** only for recovery with proof of ownership and explicit consent.
 
 ---
 
-## Visão geral dos arquivos
+## File overview
 
-| Arquivo | Papel | O que ele faz |
+| File | Role | What it does |
 | --- | --- | --- |
-| `generate.sv` | Geração de palavras BIP-39 | Converte 128 bits de entropia + checksum em 12 índices de 11 bits e busca cada palavra na ROM. Inclui `tb_words_stream_12`, um testbench que calcula o checksum via `sha256_firstbyte_128`, aciona o fluxo e imprime a frase completa. |
-| `sha256.sv` | SHA-256 compacto (1 bloco) | Implementa `sha256_firstbyte_128`, uma engine simples que processa 128 bits de entropia (mais padding) e expõe apenas o **primeiro byte do digest**, usado como checksum de 4 bits na geração de palavras. Sinaliza `busy/done` para controle fácil em hardware. |
-| `pbkdf_10_cycles.sv` | PBKDF2 iterativo (10 ciclos por compressão) | Prova de conceito de PBKDF2-HMAC-SHA512 para a senha e sal “mnemonic”. Usa um núcleo SHA-512 de 10 ciclos (`sha512_10cycle`) e FSM que itera 2048 vezes, acumulando `T` com XOR dos blocos U1..U2048. Inclui testbench que compara a saída com o vetor oficial. |
-| `pbkdf_combinational.sv` | PBKDF2 combinacional | Versão alternativa para o mesmo caso de teste “mnemonic”, mas usando compressões SHA-512 combinacionais (um ciclo por bloco). Mantém o mesmo testbench de validação da derivação de seed. |
+| `generate.sv` | BIP-39 word generation | Converts 128 bits of entropy + checksum into 12 indices of 11 bits and looks up each word in the ROM. Includes `tb_words_stream_12`, a testbench that calculates the checksum via `sha256_firstbyte_128`, drives the flow, and prints the full phrase. |
+| `sha256.sv` | Compact SHA-256 (1 block) | Implements `sha256_firstbyte_128`, a simple engine that processes 128 bits of entropy (plus padding) and exposes only the **first byte of the digest**, used as a 4-bit checksum in word generation. Signals `busy/done` for easy hardware control. |
+| `pbkdf_10_cycles.sv` | Iterative PBKDF2 (10 cycles per compression) | Proof of concept of PBKDF2-HMAC-SHA512 for the password and salt "mnemonic." Uses a 10-cycle SHA-512 core (`sha512_10cycle`) and an FSM that iterates 2048 times, accumulating `T` with XOR of blocks U1..U2048. Includes a testbench that compares the output with the official vector. |
+| `pbkdf_combinational.sv` | Combinational PBKDF2 | Alternative version for the same test case "mnemonic" but using combinational SHA-512 compressions (one cycle per block). Keeps the same validation testbench for seed derivation. |
 
 ---
 
-## Como as peças se encaixam
+## How the pieces fit together
 
-1. **Geração de frase de 12 palavras**
-   - O módulo `pack_128plus4_to_12x11` (em `generate.sv`) fatia 128 bits de entropia mais 4 bits de checksum em 12 índices BIP-39.
-   - `words_stream_12` sequencia esses índices para a ROM de palavras (`palavras_rom`) e retorna cada palavra como vetor de 72 bits, com `word_valid` pulsando a cada saída e `done` fixando ao final das 12 palavras.
-   - O testbench `tb_words_stream_12` calcula o checksum com `sha256_firstbyte_128`, aplica a entrada e imprime a frase formatada, servindo como exemplo de integração entre SHA-256 e o gerador de palavras.
+1. **12-word phrase generation**
+   - The `pack_128plus4_to_12x11` module (in `generate.sv`) slices 128 bits of entropy plus 4 bits of checksum into 12 BIP-39 indices.
+   - `words_stream_12` sequences these indices to the word ROM (`palavras_rom`) and returns each word as a 72-bit vector, with `word_valid` pulsing for each output and `done` asserted after all 12 words.
+   - The `tb_words_stream_12` testbench computes the checksum with `sha256_firstbyte_128`, applies the input, and prints the formatted phrase, serving as an integration example between SHA-256 and the word generator.
 
-2. **Derivação PBKDF2-HMAC-SHA512**
-   - Ambos os arquivos `pbkdf_10_cycles.sv` e `pbkdf_combinational.sv` implementam a derivação do seed BIP-39 padrão (senha = sal = “mnemonic” e 2048 iterações), variando apenas na arquitetura do núcleo SHA-512 (pipelining de 10 ciclos vs. bloco combinacional).
-   - Cada versão inclui um testbench que inicializa `start`, espera `done` e compara `seed_out` com o vetor esperado, imprimindo PASS/FAIL na simulação.
+2. **PBKDF2-HMAC-SHA512 derivation**
+   - Both `pbkdf_10_cycles.sv` and `pbkdf_combinational.sv` implement the standard BIP-39 seed derivation (password = salt = "mnemonic" and 2048 iterations), differing only in the SHA-512 core architecture (10-cycle pipelined vs. combinational block).
+   - Each version includes a testbench that asserts `start`, waits for `done`, and compares `seed_out` with the expected vector, printing PASS/FAIL in simulation.
 
-3. **SHA-256 para checksum**
-   - `sha256_firstbyte_128` processa uma mensagem de 128 bits (mais padding interno) e fornece o primeiro byte do digest. O testbench em `generate.sv` utiliza os bits [7:4] como checksum BIP-39, assegurando frases válidas.
-
----
-
-## Status atual e próximos passos
-
-- Os módulos já simulam os fluxos essenciais (geração de palavras e PBKDF2). Parte do código é experimental e pode ser reestruturada para pipelines, múltiplas instâncias em paralelo e integração com ROM de palavras completa.
-- Contribuições são bem-vindas em otimização (latência × área), integração com toolflows de FPGA/ASIC e cobertura de testes.
+3. **SHA-256 for checksum**
+   - `sha256_firstbyte_128` processes a 128-bit message (plus internal padding) and provides the first byte of the digest. The testbench in `generate.sv` uses bits [7:4] as the BIP-39 checksum, ensuring valid phrases.
 
 ---
 
-## Colaboração e ética
+## Current status and next steps
 
-- **Contribua tecnicamente:** Verilog/HDL, cripto aplicada, flows de síntese/implementação, validação e benchmarking.
-- **Suporte opcional:** `bc1qc6yypnwtvfd09ashe73dlg5u3msr5c6xxnxxcv` (transparência sobre uso de recursos será priorizada).
-- **Uso responsável:** Apenas recuperação legítima, com comprovação e consentimento. Cada caso deve começar por diagnóstico (artefatos digitais, contexto, senhas prováveis) para reduzir o espaço de busca antes de gastar energia computacional.
+- The modules already simulate the essential flows (word generation and PBKDF2). Parts of the code are experimental and may be restructured for pipelines, multiple parallel instances, and integration with the full word ROM.
+- Contributions are welcome for optimization (latency × area), integration with FPGA/ASIC toolflows, and test coverage.
 
-PRs, issues e sugestões são sempre bem-vindos! 🚀
+---
+
+## Collaboration and ethics
+
+- **Contribute technically:** Verilog/HDL, applied crypto, synthesis/implementation flows, validation, and benchmarking.
+- **Optional support:** `bc1qc6yypnwtvfd09ashe73dlg5u3msr5c6xxnxxcv` (transparency about resource use will be prioritized).
+- **Responsible use:** Only legitimate recovery, with proof and consent. Each case should start with diagnostics (digital artifacts, context, likely passwords) to reduce the search space before spending computational energy.
+
+PRs, issues, and suggestions are always welcome! 🚀
